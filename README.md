@@ -475,9 +475,9 @@ Building target
 
 ### Special Syntax
 
-Mmk supports inline comments. Everything on a line after `#` is ignored
-Mmk also supports line splitting. A line can be continued onto the next line with a `\` character.
-Mmk supports quoted (`"`) strings in most places to capture targets/deps/etc containing spaces or other syntax characters.
+* Mmk supports inline comments. Everything on a line after `#` is ignored
+* Mmk also supports line splitting. A line can be continued onto the next line with a `\` character.
+* Mmk supports quoted (`"`) strings in most places to capture targets/deps/etc containing spaces or other syntax characters.
 
 For example:
 ```
