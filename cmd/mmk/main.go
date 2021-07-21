@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/knusbaum/mmk"
 
@@ -44,9 +45,21 @@ func lex(f string) {
 	log.Printf("Failed to lex: %v %s", t, err)
 }
 
+func splitTarget(t string) (string, string) {
+	i := strings.LastIndex(t, ":")
+	if i == -1 {
+		return t, ""
+	}
+	target := t[:i]
+	if target == "" {
+		target = "main"
+	}
+	return target, t[i+1:]
+}
+
 func main() {
 	mmkfile := flag.String("f", "mmkfile", "the mmkfile to read and execute")
-	ruleType := flag.String("t", "", "the rule type to execute")
+	//ruleType := flag.String("t", "", "the rule type to execute")
 	dump := flag.Bool("d", false, "dump the parsed rules to stdout")
 	jobs := flag.Int("j", runtime.GOMAXPROCS(-1)+1, "max number of concurrent jobs")
 	verbose := flag.Bool("v", false, "run verbosely")
@@ -72,14 +85,26 @@ func main() {
 		return
 	}
 
-	os.Setenv("mmk_ruletype", *ruleType)
-
 	targets := flag.Args()
 	if len(targets) == 0 {
 		targets = []string{"main"}
 	}
 	for _, target := range targets {
-		graph, err := mmk.GenerateGraph(res, target, *ruleType)
+		target, ruleType := splitTarget(target)
+		if res.RuleFor(target, ruleType) == nil {
+			target += ":" + ruleType
+			ruleType = ""
+			if res.RuleFor(target, ruleType) == nil {
+				log.Fatalf("Could not find target for %s", target)
+			}
+		}
+		//log.Printf("Target: [%s], RuleType: [%s]", target, ruleType)
+		if ruleType != "" {
+			log.Printf("Starting %s:%s", target, ruleType)
+		} else {
+			log.Printf("Starting %s", target)
+		}
+		graph, err := mmk.GenerateGraph(res, target, ruleType)
 		if err != nil {
 			log.Fatalf("Could not construct dependency graph for %s: %s", target, err)
 		}

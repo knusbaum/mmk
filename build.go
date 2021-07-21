@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/participle/v2"
+	"github.com/alecthomas/participle/v2/lexer/stateful"
 )
 
 var Verbose bool
@@ -44,6 +45,24 @@ func (n *Node) Wait() error {
 	return n.buildErr
 }
 
+var depLex = stateful.MustSimple([]stateful.Rule{
+	{"String", `"(\\"|[^"])*"`, nil},
+	{"Part", `[^\s:]+`, nil},
+	{"Colon", `:`, nil},
+	{"Whitespace", `\s`, nil},
+})
+
+type dep struct {
+	Target   string `@(String | Part)`
+	RuleType string `(Colon @(String | Part))?Whitespace*`
+}
+
+type deps struct {
+	Deps []*dep `@@*`
+}
+
+var depParser = participle.MustBuild(&deps{}, participle.Lexer(depLex))
+
 func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph map[string]*Node) (*Node, error) {
 	// log.Printf("depchain: %#v\n", depchain)
 	for _, dep := range depchain {
@@ -59,7 +78,7 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 		}
 		return nil, fmt.Errorf("No such target %s for dependency chain %s", target, strings.Join(depchain, " -> "))
 	}
-	node, ok := graph[target]
+	node, ok := graph[target+":"+ruleType]
 	if !ok {
 		node = &Node{
 			Target:   target,
@@ -70,7 +89,7 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 			Vars:     r.Vars,
 			built:    make(chan struct{}),
 		}
-		graph[target] = node
+		graph[target+":"+ruleType] = node
 	}
 
 	body := rule.SelectBody(ruleType)
@@ -84,24 +103,35 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 		// log.Printf("LOOKING UP [%s]\n", s)
 		return vars[s]
 	})
-	// log.Printf("EXPANDED DEPENDENCIES: %s\n", dependencystr)
+	//log.Printf("EXPANDED DEPENDENCIES: %s\n", dependencystr)
 
-	var v struct {
-		Strs []string `@(Any | String | Vname)*`
-	}
-	p := participle.MustBuild(&struct {
-		Strs []string `@(Any | String | Vname)*`
-	}{}, participle.Lexer(Lex))
-	err := p.ParseString("", dependencystr, &v)
+	// 	var v struct {
+	// 		Strs []string `@(Any | String | Vname)*`
+	// 	}
+	// 	p := participle.MustBuild(&struct {
+	// 		Strs []string `@(Any | String | Vname)*`
+	// 	}{}, participle.Lexer(Lex))
+	// 	err := p.ParseString("", dependencystr, &v)
+	var ds deps
+	err := depParser.ParseString("", dependencystr, &ds)
 	if err != nil {
 		log.Printf("Failed to parse dependencies: %s", err)
 	}
-	// log.Printf("Deps: %#v", v.Strs)
+	// 	log.Printf("Deps: %#v", ds.Deps)
+	// 	for _, d := range ds.Deps {
+	// 		log.Printf("DEP: %#v", d)
+	// 	}
+	dc := append(depchain, target+":"+ruleType)
+	for _, dep := range ds.Deps {
+		depTarget := strings.Trim(dep.Target, `"`)
+		rt := ruleType
+		if dep.RuleType != "" {
+			rt = dep.RuleType
+		}
+		//log.Printf("DEPENDENCY: (%s)(%s)\n", depTarget, rt)
 
-	for _, dependency := range v.Strs {
-		dc := append(depchain, target)
-		//log.Printf("Building graph for %s (%s)\n", dependency, ruleType)
-		depnode, err := r.BuildGraph(dependency, ruleType, dc, graph)
+		//log.Printf("Building graph for %s (%s)\n", dependency.Target, rt)
+		depnode, err := r.BuildGraph(depTarget, rt, dc, graph)
 		if err != nil {
 			return nil, err
 		}
@@ -109,8 +139,8 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 			// Non-node dependency (file present)
 			continue
 		}
-		depnode.Incoming[target] = node
-		node.Outgoing[dependency] = depnode
+		depnode.Incoming[target+":"+ruleType] = node
+		node.Outgoing[depTarget+":"+rt] = depnode
 	}
 	return node, nil
 }
@@ -207,6 +237,7 @@ func (n *Node) run() error {
 	for i, s := range strs {
 		vars = append(vars, fmt.Sprintf("match_%d=%s", i, s))
 	}
+	vars = append(vars, fmt.Sprintf("mmk_ruletype=%s", n.RuleType))
 	cmd.Env = append(os.Environ(), vars...)
 	cmd.Stdin = strings.NewReader(addHeader(execBody, n.Target))
 	if Verbose {
@@ -287,12 +318,17 @@ func (n *Node) Build() error {
 	default:
 	}
 	if !n.NeedsBuild() {
-		log.Printf("%s already built.\n", n.Target)
+		if n.RuleType != "" {
+			log.Printf("%s:%s already built.", n.Target, n.RuleType)
+		} else {
+			log.Printf("%s already built.", n.Target)
+		}
 		close(n.built)
 		return nil
 	}
-	if n.RuleType != "" {
-		log.Printf("Building %s [%s]", n.Target, n.RuleType)
+	body := n.RuleSet.SelectBody(n.RuleType)
+	if body.RuleType != "" {
+		log.Printf("Building %s:%s", n.Target, body.RuleType)
 	} else {
 		log.Printf("Building %s", n.Target)
 	}

@@ -36,7 +36,7 @@ var Lex = stateful.Must(stateful.Rules{
 	},
 	"Var": {
 		{"Vname", "[a-zA-Z][a-zA-Z0-9_-]*", nil},
-		{"newline", `[\n]`, stateful.Pop()},
+		{"Newline", `\n`, stateful.Pop()},
 		{"Equal", "=", nil},
 		stateful.Include("String"),
 		stateful.Include("Any"),
@@ -90,6 +90,14 @@ type Elem struct {
 	Any string `@(Any | String)`
 	//String string `| @String`
 	Regex string `| @Regex`
+}
+
+func (e *Elem) Raw() string {
+	if e.Any != "" {
+		return e.Any
+	} else {
+		return e.Regex
+	}
 }
 
 func (e *Elem) Value() *Matcher {
@@ -183,6 +191,8 @@ func (r *RuleSets) Print() {
 
 func (r *RuleSets) RuleFor(target, ruleType string) *RuleSet {
 	for _, s := range r.RuleSets {
+		//log.Printf("Checking for target %s", s.Target.String())
+		//log.Printf("TARGET MATCHES: %t, BODY(%s): %p", s.Target.Matches(target), ruleType, s.SelectBody(ruleType))
 		if s.Target.Matches(target) && s.SelectBody(ruleType) != nil {
 			return s
 		}
@@ -221,13 +231,17 @@ func expand(f *File) error {
 				return err
 			}
 			newDirectives = append(newDirectives, incf.Directives...)
+			for k, rt := range incf.RuleTypes {
+				ruleTypes[k] = rt
+			}
+			f.Vars = append(f.Vars, incf.Vars...)
 		} else if directive.Var != nil {
 			joined := strings.Join(directive.Var.Value, " ")
 			//joined := directive.Var.Value
 			if strings.HasPrefix(joined, "$(") && strings.HasSuffix(joined, ")") {
 				cmdBody := joined[2:]
 				cmdBody = cmdBody[:len(cmdBody)-1]
-				log.Printf("CMD: %s\n", cmdBody)
+				//log.Printf("CMD: %s\n", cmdBody)
 				cmd := exec.Command("bash", "-c", cmdBody)
 				//cmd.Stdin = strings.NewReader(addHeader(execBody, n.Target, n.Vars))
 				cmd.Stderr = os.Stderr
@@ -303,7 +317,7 @@ func convert(f *File) (*RuleSets, error) {
 					rb.Dependencies = make([]string, 0)
 				}
 				for i := 0; i < len(s.ThirdPart); i++ {
-					rb.Dependencies = append(rb.Dependencies, s.ThirdPart[i].Value().String())
+					rb.Dependencies = append(rb.Dependencies, s.ThirdPart[i].Raw())
 				}
 				for i, t := range ruleTypes {
 					if i == 0 {
@@ -327,7 +341,7 @@ func convert(f *File) (*RuleSets, error) {
 			if i == 0 && s.Colon == "" {
 				// First rule section, if only second section is present, it is dependencies.
 				for i := 0; i < len(s.SecondPart); i++ {
-					rb.Dependencies = append(rb.Dependencies, s.SecondPart[i].Value().String())
+					rb.Dependencies = append(rb.Dependencies, s.SecondPart[i].Raw())
 				}
 			} else {
 				// Otherwise and in the remaining rule sections, second part is
@@ -340,7 +354,7 @@ func convert(f *File) (*RuleSets, error) {
 					rb.Dependencies = rs.Bodies[0].Dependencies
 				} else {
 					for i := 0; i < len(s.ThirdPart); i++ {
-						rb.Dependencies = append(rb.Dependencies, s.ThirdPart[i].Value().String())
+						rb.Dependencies = append(rb.Dependencies, s.ThirdPart[i].Raw())
 					}
 				}
 			}
