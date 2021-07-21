@@ -54,7 +54,8 @@ var depLex = stateful.MustSimple([]stateful.Rule{
 
 type dep struct {
 	Target   string `@(String | Part)`
-	RuleType string `(Colon @(String | Part))?Whitespace*`
+	Colon    string `@Colon?`
+	RuleType string `@(String | Part)?Whitespace*`
 }
 
 type deps struct {
@@ -73,7 +74,7 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 	rule := r.RuleFor(target, ruleType)
 	if rule == nil {
 		if fileExists(target) {
-			log.Printf("Found dependency <FILE %s>", target)
+			log.Printf("No rule found for %s:%s, but found file with same name.", target, ruleType)
 			return nil, nil
 		}
 		return nil, fmt.Errorf("No such target %s for dependency chain %s", target, strings.Join(depchain, " -> "))
@@ -125,7 +126,7 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 	for _, dep := range ds.Deps {
 		depTarget := strings.Trim(dep.Target, `"`)
 		rt := ruleType
-		if dep.RuleType != "" {
+		if dep.Colon != "" {
 			rt = dep.RuleType
 		}
 		//log.Printf("DEPENDENCY: (%s)(%s)\n", depTarget, rt)
