@@ -499,3 +499,27 @@ $ mmk -v 'my weird rule name'
 01:02:03 Building my weird rule name
 This is the rule body
 ```
+
+### EBNF
+
+Here is the token set and EBNF for an mmkfile:
+```
+<newline>=\n
+<include>=<.*\n
+<var>=var
+<ruletype>=ruletype
+<any>=\S+
+<string>="(\\"|[^"])*"
+<regex>='(\\'|[^'])*'
+<colon>=:
+<cmdline>=^\t.*
+<vname>=[a-zA-Z][a-zA-Z0-9_-]*
+
+File = (<newline>* Directive*)* .
+Directive = <include> | Rule | (<var> Var) | (<ruletype> RuleType) .
+Rule = Elem RuleSection* .
+Elem = (<any> | <string>) | <regex> .
+RuleSection = <colon> Elem* <colon>? Elem* <newline> (<cmdline> <newline>?)* .
+Var = <vname> "=" (<any> | <string> | <vname>)* .
+RuleType = Elem (<newline>? RuleSection)* .
+```
