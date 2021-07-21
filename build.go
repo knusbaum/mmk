@@ -209,6 +209,11 @@ set -o errexit
 set -o nounset
 set -o pipefail
 # set -x
+
+function mmkecho {
+	builtin echo $@ 1>&3
+}
+
 `
 
 	// 	for _, v := range vars {
@@ -243,6 +248,7 @@ func (n *Node) run() error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	}
+	cmd.ExtraFiles = []*os.File{os.Stderr}
 	if err := cmd.Run(); err != nil && !body.FailOK {
 		//log.Printf("RUN ERROR: %s", err)
 		return fmt.Errorf("Failed to execute target: %s: %s", n.Target, err)
@@ -269,6 +275,7 @@ func (n *Node) BuildDate() time.Time {
 			if Verbose {
 				cmd.Stderr = os.Stderr
 			}
+			cmd.ExtraFiles = []*os.File{os.Stderr}
 			output, err := cmd.Output()
 			if err != nil {
 				//log.Printf("Failed to run build_date target for target %s: %s", n.Target, err)

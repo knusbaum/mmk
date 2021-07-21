@@ -1,6 +1,6 @@
 # mmk
 
-MMK is a modernized version of the make build tool (Modern MaKe)
+Mmk is a modernized version of the make build tool (Modern MaKe)
 
 It incorporates several improvements to a traditional make that improve its
 usability as a modern build tool
@@ -44,6 +44,20 @@ $ mmk timefile
 01:02:03 Starting timefile
 01:02:03 Building timefile
 ```
+
+Mmk supresses output from rules, but rules can voluntarily echo things to
+mmk's standard error with the `mmkecho` command:
+```
+timefile :
+	mmkecho building timefile
+	date >timefile
+```
+
+Alternately, mmk can be invoked with the `-v` flag, which will cause all
+commands' standard output and standard errors to be connected to mmk`s
+standard output and standard error when they are run. No attempt is made to
+synchronize output, so when running multiple targets concurrently, expect
+output to be jumbled.
 
 #### Dependencies
 
@@ -242,6 +256,20 @@ deleting baz
 deleting bar
 01:02:03 Building foo:clean
 deleting foo
+```
+
+Rule types can be more than one word. Subsequent words in an rule type are
+considered "flags" that attach behavior to the rule. Currently the only
+"flag" available is `failok`, which does not cause mmk to stop processing a
+target when the `failok` rule fails. This is useful, for example, for
+`clean` targets when we don't care if they fail or not.
+```
+foo :
+	echo making $target
+	touch $target
+: clean failok
+	echo deleting $target
+	rm $target
 ```
 
 These rule types can be used in combination with regular expression
