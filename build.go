@@ -7,7 +7,12 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/alecthomas/participle/v2"
 )
+
+var Verbose bool
 
 // Exists reports whether the named file or directory exists.
 func fileExists(name string) bool {
@@ -25,7 +30,9 @@ type Node struct {
 	RuleSet  *RuleSet
 	Incoming map[string]*Node
 	Outgoing map[string]*Node
+	Vars     []*Var
 	visited  bool
+	queued   bool
 
 	sync.Mutex
 	built    chan struct{}
@@ -38,6 +45,12 @@ func (n *Node) Wait() error {
 }
 
 func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph map[string]*Node) (*Node, error) {
+	// log.Printf("depchain: %#v\n", depchain)
+	for _, dep := range depchain {
+		if dep == target {
+			return nil, fmt.Errorf("Found dependency cycle: %s", strings.Join(depchain, " -> ")+" -> "+target)
+		}
+	}
 	rule := r.RuleFor(target, ruleType)
 	if rule == nil {
 		if fileExists(target) {
@@ -54,14 +67,40 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 			RuleSet:  rule,
 			Incoming: make(map[string]*Node),
 			Outgoing: make(map[string]*Node),
+			Vars:     r.Vars,
 			built:    make(chan struct{}),
 		}
 		graph[target] = node
 	}
 
 	body := rule.SelectBody(ruleType)
-	for _, dependency := range body.Dependencies {
+
+	vars := make(map[string]string)
+	for _, v := range r.Vars {
+		vars[v.Name] = strings.Join(v.Value, " ")
+	}
+	dependencystr := strings.Join(body.Dependencies, " ")
+	dependencystr = os.Expand(dependencystr, func(s string) string {
+		// log.Printf("LOOKING UP [%s]\n", s)
+		return vars[s]
+	})
+	// log.Printf("EXPANDED DEPENDENCIES: %s\n", dependencystr)
+
+	var v struct {
+		Strs []string `@(Any | String | Vname)*`
+	}
+	p := participle.MustBuild(&struct {
+		Strs []string `@(Any | String | Vname)*`
+	}{}, participle.Lexer(Lex))
+	err := p.ParseString("", dependencystr, &v)
+	if err != nil {
+		log.Printf("Failed to parse dependencies: %s", err)
+	}
+	// log.Printf("Deps: %#v", v.Strs)
+
+	for _, dependency := range v.Strs {
 		dc := append(depchain, target)
+		//log.Printf("Building graph for %s (%s)\n", dependency, ruleType)
 		depnode, err := r.BuildGraph(dependency, ruleType, dc, graph)
 		if err != nil {
 			return nil, err
@@ -108,41 +147,51 @@ func GenerateGraph(rs *RuleSets, target, ruleType string) (*Graph, error) {
 	return &Graph{roots}, nil
 }
 
-func (g *Graph) Execute() error {
-	var wg sync.WaitGroup
-	errc := make(chan error)
-	for _, root := range g.roots {
-		wg.Add(1)
-		go func(root *Node) {
-			defer wg.Done()
-			if err := Execute(root); err != nil {
-				errc <- err
-			}
-		}(root)
-	}
-	go func() {
-		defer close(errc)
-		wg.Wait()
-	}()
-
-	// This only collects the first error.
-	err, ok := <-errc
-	if ok {
-		return err
-	}
-	return nil
+func (g *Graph) Execute(njobs int) error {
+	return Execute(g.roots, njobs)
+	// 	var wg sync.WaitGroup
+	// 	errc := make(chan error)
+	// 	for _, root := range g.roots {
+	// 		wg.Add(1)
+	// 		go func(root *Node) {
+	// 			defer wg.Done()
+	// 			if err := Execute(root, njobs); err != nil {
+	// 				errc <- err
+	// 			}
+	// 		}(root)
+	// 	}
+	// 	go func() {
+	// 		defer close(errc)
+	// 		wg.Wait()
+	// 	}()
+	//
+	// 	// This only collects the first error.
+	// 	err, ok := <-errc
+	// 	if ok {
+	// 		return err
+	// 	}
+	// 	return nil
 }
 
-func addHeader(body string) string {
-	return `
+func addHeader(body string, target string) string {
+	ret := `
 set -o errexit
 set -o nounset
 set -o pipefail
+# set -x
 
-set -x
-
-` + body + `
+target=` + target + `
 `
+
+	// 	for _, v := range vars {
+	// 		varstr := fmt.Sprintf("%s=%s\n", v.Name, v.Value)
+	// 		ret += varstr
+	// 	}
+
+	ret += body + `
+`
+	// fmt.Printf("SCRIPT: %s", ret)
+	return ret
 }
 
 func (n *Node) run() error {
@@ -150,14 +199,82 @@ func (n *Node) run() error {
 	body := n.RuleSet.SelectBody(n.RuleType)
 	execBody := strings.Join(body.Lines, "\n")
 	cmd := exec.Command("bash", "-s")
-	cmd.Stdin = strings.NewReader(addHeader(execBody))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		log.Printf("RUN ERROR: %s", err)
+	var vars []string
+	for _, v := range n.Vars {
+		vars = append(vars, fmt.Sprintf("%s=%s", v.Name, strings.Join(v.Value, " ")))
+	}
+	strs := n.RuleSet.Target.Captures(n.Target)
+	for i, s := range strs {
+		vars = append(vars, fmt.Sprintf("match_%d=%s", i, s))
+	}
+	cmd.Env = append(os.Environ(), vars...)
+	cmd.Stdin = strings.NewReader(addHeader(execBody, n.Target))
+	if Verbose {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
+	if err := cmd.Run(); err != nil && !body.FailOK {
+		//log.Printf("RUN ERROR: %s", err)
 		return fmt.Errorf("Failed to execute target: %s: %s", n.Target, err)
 	}
 	return nil
+}
+
+func (n *Node) BuildDate() time.Time {
+	for _, body := range n.RuleSet.Bodies {
+		if body.RuleType == "build_date" {
+			execBody := strings.Join(body.Lines, "\n")
+			cmd := exec.Command("bash", "-s")
+			var vars []string
+			for _, v := range n.Vars {
+				vars = append(vars, fmt.Sprintf("%s=%s", v.Name, v.Value))
+			}
+			strs := n.RuleSet.Target.Captures(n.Target)
+			for i, s := range strs {
+				vars = append(vars, fmt.Sprintf("match_%d=%s", i, s))
+			}
+			cmd.Env = append(os.Environ(), vars...)
+			cmd.Stdin = strings.NewReader(addHeader(execBody, n.Target))
+			if Verbose {
+				cmd.Stderr = os.Stderr
+			}
+			output, err := cmd.Output()
+			if err != nil {
+				//log.Printf("Failed to run build_date target for target %s: %s", n.Target, err)
+				return time.Time{}
+			}
+			t, err := time.Parse(time.RFC1123Z, strings.TrimSpace(string(output)))
+			if err != nil {
+				log.Printf("Failed to parse date from build_date target for target %s: %s [Output: %s]", n.Target, err, strings.TrimSpace(string(output)))
+				return time.Time{}
+			}
+			return t
+		}
+	}
+	stat, err := os.Stat(n.Target)
+	if err != nil {
+		return time.Time{}
+	}
+	return stat.ModTime()
+}
+
+func (n *Node) NeedsBuild() bool {
+	//log.Printf("CHECKING TARGET [%s]", n.Target)
+	if n.RuleType == "" {
+		//log.Printf("Checking Build Date.")
+		thisDate := n.BuildDate()
+		if thisDate.IsZero() {
+			return true
+		}
+		for _, out := range n.Outgoing {
+			upstream := out.BuildDate()
+			if upstream.After(thisDate) {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 func (n *Node) Build() error {
@@ -165,50 +282,126 @@ func (n *Node) Build() error {
 	defer n.Unlock()
 	select {
 	case <-n.built:
-		fmt.Printf("%s already built.\n", n.Target)
+		//log.Printf("!!!%s already built.\n", n.Target)
 		return nil
 	default:
 	}
-	log.Printf("Building %s Incoming: %d, Outgoing: %d\n", n.Target, len(n.Incoming), len(n.Outgoing))
+	if !n.NeedsBuild() {
+		log.Printf("%s already built.\n", n.Target)
+		close(n.built)
+		return nil
+	}
+	if n.RuleType != "" {
+		log.Printf("Building %s [%s]", n.Target, n.RuleType)
+	} else {
+		log.Printf("Building %s", n.Target)
+	}
 	if err := n.run(); err != nil {
 		n.buildErr = err
 		log.Printf("ERROR: %s", err)
+		close(n.built)
 		return err
 	}
+	//log.Printf("CLOSING BUILT FOR %s", n.Target)
 	close(n.built)
 	return nil
 }
 
-func Execute(n *Node) error {
-	for _, out := range n.Outgoing {
-		err := out.Wait()
-		if err != nil {
-			return fmt.Errorf("Cannot build %s. Dependency failed: %s", n.Target, err)
+// func execute(n *Node) error {
+// 	for _, out := range n.Outgoing {
+// 		err := out.Wait()
+// 		if err != nil {
+// 			return fmt.Errorf("Cannot build %s. Dependency failed: %s", n.Target, err)
+// 		}
+// 	}
+// 	if err := n.Build(); err != nil {
+// 		return err
+// 	}
+// 	var wg sync.WaitGroup
+// 	errc := make(chan error)
+// 	for _, in := range n.Incoming {
+// 		wg.Add(1)
+// 		go func(in *Node) {
+// 			defer wg.Done()
+// 			if err := execute(in); err != nil {
+// 				errc <- err
+// 			}
+// 		}(in)
+// 	}
+// 	go func() {
+// 		defer close(errc)
+// 		wg.Wait()
+// 	}()
+//
+// 	// This only collects the first error.
+// 	err, ok := <-errc
+// 	if ok {
+// 		return err
+// 	}
+// 	return nil
+// }
+
+func enqueue(execNode chan *Node, ns []*Node) {
+	queue := make([]*Node, len(ns))
+	copy(queue, ns)
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		n.queued = true
+		execNode <- n
+	queuer:
+		for _, n := range n.Incoming {
+			if n.queued {
+				continue
+			}
+			for _, out := range n.Outgoing {
+				if !out.queued {
+					continue queuer
+				}
+			}
+			queue = append(queue, n)
 		}
 	}
-	if err := n.Build(); err != nil {
-		return err
-	}
+}
+
+func Execute(ns []*Node, njobs int) error {
+	execNode := make(chan *Node, 10)
+	errc := make(chan error, 10)
 	var wg sync.WaitGroup
-	errc := make(chan error)
-	for _, in := range n.Incoming {
+	for i := 0; i < njobs; i++ {
 		wg.Add(1)
-		go func(in *Node) {
+		go func() {
 			defer wg.Done()
-			if err := Execute(in); err != nil {
-				errc <- err
+			for n := range execNode {
+				//log.Printf("Build %s", n.Target)
+				for _, out := range n.Outgoing {
+					//log.Printf("Waiting for %s", out.Target)
+					err := out.Wait()
+					//log.Printf("Done Waiting for %s", out.Target)
+					if err != nil {
+						errc <- fmt.Errorf("Cannot build %s. Dependency failed: %s", n.Target, err)
+						return
+					}
+				}
+				//log.Printf("Actor building %s", n.Target)
+				if err := n.Build(); err != nil {
+					errc <- err
+					return
+				}
 			}
-		}(in)
+		}()
 	}
 	go func() {
 		defer close(errc)
 		wg.Wait()
 	}()
 
-	// This only collects the first error.
-	err, ok := <-errc
-	if ok {
-		return err
+	enqueue(execNode, ns)
+	close(execNode)
+	var err error
+	for e := range errc {
+		err = e
+		log.Printf("ERROR: %s", err)
 	}
-	return nil
+	return err
 }

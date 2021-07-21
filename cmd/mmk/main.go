@@ -4,8 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"runtime"
 
 	"github.com/knusbaum/mmk"
+
+	"github.com/alecthomas/participle/v2/lexer"
 )
 
 const src = `
@@ -23,15 +27,52 @@ foo.o : file : foodep
 blank : foo : rest rest rest
 `
 
+func lex(f string) {
+	file, err := os.Open(f)
+	if err != nil {
+		log.Fatalf("Error lexing %s: %s", f, err)
+	}
+	defer file.Close()
+	lx, err := mmk.Lex.Lex(f, file)
+	if err != nil {
+		log.Printf("Failed to lex: %s", err)
+	}
+	var t lexer.Token
+	for t, err = lx.Next(); err == nil && !t.EOF(); t, err = lx.Next() {
+		log.Printf("TOKEN: %#v\n", t)
+	}
+	log.Printf("Failed to lex: %v %s", t, err)
+}
+
 func main() {
 	mmkfile := flag.String("f", "mmkfile", "the mmkfile to read and execute")
 	ruleType := flag.String("t", "", "the rule type to execute")
+	dump := flag.Bool("d", false, "dump the parsed rules to stdout")
+	jobs := flag.Int("j", runtime.GOMAXPROCS(-1)+1, "max number of concurrent jobs")
+	verbose := flag.Bool("v", false, "run verbosely")
 	flag.Parse()
+
+	mmk.Verbose = *verbose
+	os.Setenv("mmk_verbose", fmt.Sprintf("%t", mmk.Verbose))
+	log.SetFlags(log.Ltime)
+
+	if *jobs <= 0 {
+		log.Fatalf("Error: jobs must be >= 0")
+	}
+	os.Setenv("mmk_njobs", fmt.Sprintf("%d", *jobs))
 
 	res, err := mmk.Parse(*mmkfile)
 	if err != nil {
 		log.Fatalf("Error: %s", err)
 	}
+	os.Setenv("mmk_file", *mmkfile)
+
+	if *dump {
+		res.Print()
+		return
+	}
+
+	os.Setenv("mmk_ruletype", *ruleType)
 
 	targets := flag.Args()
 	if len(targets) == 0 {
@@ -42,7 +83,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Could not construct dependency graph for %s: %s", target, err)
 		}
-		err = graph.Execute()
+		err = graph.Execute(*jobs)
 		if err != nil {
 			log.Fatalf("Failed to build target %s: %s", target, err)
 		}

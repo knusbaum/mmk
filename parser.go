@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 
@@ -13,26 +14,33 @@ import (
 )
 
 var Lex = stateful.Must(stateful.Rules{
+	"String": {
+		{"String", `"(\\"|[^"])*"`, nil},
+	},
+	"Any": {
+		{"Any", `[^\s\\]+`, nil},
+		{"continue", `\\.*\n\s*`, nil},
+	},
 	"Root": {
+		{"comment", `#.*`, nil},
 		{"Colon", `:`, nil},
 		{"Var", "var", stateful.Push("Var")},
 		{"Include", `^<.*\n`, nil},
-		{"String", `"(\\"|[^"])*"`, nil},
+		{"Ruletype", "ruletype", nil},
+		stateful.Include("String"),
 		{"Regex", `'(\\'|[^'])*'`, nil},
-		{"Any", `\S+`, nil},
+		stateful.Include("Any"),
 		{"CmdLine", `^\t.*`, nil},
-		{"Newline", `[\n]`, nil},
+		{"Newline", `\n`, nil},
 		{"whitespace", `[\t\f\r ]+`, nil}, // Rules starting with a lower-case letter are elided automatically.
 	},
 	"Var": {
 		{"Vname", "[a-zA-Z][a-zA-Z0-9_-]*", nil},
 		{"newline", `[\n]`, stateful.Pop()},
-		{"Equal", "=", stateful.Push("Var2")},
+		{"Equal", "=", nil},
+		stateful.Include("String"),
+		stateful.Include("Any"),
 		{"whitespace", `[\t\f\r ]+`, nil},
-	},
-	"Var2": {
-		{"newline", `[\n]`, stateful.Pop()},
-		{"VarVal", `.*`, stateful.Pop()},
 	},
 })
 
@@ -40,18 +48,26 @@ var Parser = participle.MustBuild(&File{}, participle.Lexer(Lex))
 
 type File struct {
 	Source     string
+	Vars       []*Var
+	RuleTypes  map[string]*RuleType
 	Directives []*Directive `(Newline* @@*)*`
 }
 
 type Directive struct {
-	Include string `@Include`
-	Rule    *Rule  `| @@`
-	Var     *Var   `| Var @@`
+	Include  string    `@Include`
+	Rule     *Rule     `| @@`
+	Var      *Var      `| Var @@`
+	RuleType *RuleType `| Ruletype @@`
+}
+
+type RuleType struct {
+	RuleType     *Elem          `@@`
+	RuleSections []*RuleSection `(Newline? @@)*`
 }
 
 type Var struct {
-	Name  string `@Vname`
-	Value string `Equal @VarVal`
+	Name  string   `@Vname`
+	Value []string `Equal @(Any | String | Vname)*`
 }
 
 type Rule struct {
@@ -71,24 +87,32 @@ type Elems struct {
 }
 
 type Elem struct {
-	Any    string `@Any`
-	String string `| @String`
-	Regex  string `| @Regex`
+	Any string `@(Any | String)`
+	//String string `| @String`
+	Regex string `| @Regex`
 }
 
 func (e *Elem) Value() *Matcher {
 	if e.Any != "" {
-		return &Matcher{Str: e.Any}
-	} else if e.String != "" {
-		return &Matcher{Str: strings.Trim(e.String, `"`)}
+		return &Matcher{Str: strings.Trim(e.Any, `"`)}
 	} else {
 		return &Matcher{Regex: regexp.MustCompile(strings.Trim(e.Regex, `'`))}
 	}
+	// else if e.String != "" {
+	// 		return &Matcher{Str: strings.Trim(e.String, `"`)}
+	// 	}
 }
 
 type Matcher struct {
 	Str   string
 	Regex *regexp.Regexp
+}
+
+func (m *Matcher) Captures(s string) []string {
+	if m.Str != "" {
+		return nil
+	}
+	return m.Regex.FindStringSubmatch(s)
 }
 
 func (m *Matcher) Matches(s string) bool {
@@ -108,6 +132,7 @@ func (m *Matcher) String() string {
 }
 
 type RuleSets struct {
+	Vars     []*Var
 	RuleSets []*RuleSet
 }
 
@@ -118,13 +143,17 @@ type RuleSet struct {
 
 type RuleBody struct {
 	RuleType     string
+	FailOK       bool
 	Dependencies []string
 	Lines        []string
 }
 
 func (r *RuleSet) SelectBody(ruleType string) *RuleBody {
 	if ruleType == "" {
-		return r.Bodies[0]
+		if len(r.Bodies) > 0 {
+			return r.Bodies[0]
+		}
+		return nil
 	}
 	for _, body := range r.Bodies {
 		// TODO: Allow other ruleType selection methods
@@ -133,6 +162,23 @@ func (r *RuleSet) SelectBody(ruleType string) *RuleBody {
 		}
 	}
 	return nil
+}
+
+func (r *RuleSets) Print() {
+	fmt.Printf("[Vars: \n")
+	for _, v := range r.Vars {
+		fmt.Printf("\t%s=%#v\n", v.Name, v.Value)
+	}
+	fmt.Printf("]\n")
+	for _, rs := range r.RuleSets {
+		fmt.Printf("[Target: %s]\n", rs.Target)
+		for _, body := range rs.Bodies {
+			fmt.Printf("\t [Type: %s] -> [Deps: %s]:\n", body.RuleType, strings.Join(body.Dependencies, ", "))
+			for _, line := range body.Lines {
+				fmt.Printf("\t\t%s\n", line)
+			}
+		}
+	}
 }
 
 func (r *RuleSets) RuleFor(target, ruleType string) *RuleSet {
@@ -163,6 +209,7 @@ func parseFile(file string) (*File, error) {
 
 func expand(f *File) error {
 	var newDirectives []*Directive
+	ruleTypes := make(map[string]*RuleType)
 	for _, directive := range f.Directives {
 		if directive.Include != "" {
 			incf, err := parseFile(directive.Include)
@@ -175,11 +222,36 @@ func expand(f *File) error {
 			}
 			newDirectives = append(newDirectives, incf.Directives...)
 		} else if directive.Var != nil {
-			log.Printf("Have Variable: %#v\n", directive.Var)
-		} else {
+			joined := strings.Join(directive.Var.Value, " ")
+			//joined := directive.Var.Value
+			if strings.HasPrefix(joined, "$(") && strings.HasSuffix(joined, ")") {
+				cmdBody := joined[2:]
+				cmdBody = cmdBody[:len(cmdBody)-1]
+				log.Printf("CMD: %s\n", cmdBody)
+				cmd := exec.Command("bash", "-c", cmdBody)
+				//cmd.Stdin = strings.NewReader(addHeader(execBody, n.Target, n.Vars))
+				cmd.Stderr = os.Stderr
+				output, err := cmd.Output()
+				if err != nil {
+					log.Printf("%s Error: %s", cmdBody, err)
+					directive.Var.Value = []string{""}
+					//directive.Var.Value = ""
+				} else {
+					directive.Var.Value = []string{strings.TrimSpace(string(output))}
+					//directive.Var.Value = strings.TrimSpace(string(output))
+				}
+			}
+			//log.Printf("Have Variable: %#v\n", directive.Var)
+			f.Vars = append(f.Vars, directive.Var)
+		} else if directive.RuleType != nil {
+			ruleTypes[directive.RuleType.RuleType.Value().String()] = directive.RuleType
+			//log.Printf("Have RuleType:")
+			//spew.Dump(directive.RuleType)
+		} else if directive.Rule != nil {
 			newDirectives = append(newDirectives, directive)
 		}
 	}
+	f.RuleTypes = ruleTypes
 	f.Directives = newDirectives
 	return nil
 }
@@ -196,6 +268,13 @@ func sanitize(f *File) {
 				}
 			}
 		}
+		if directive.RuleType != nil {
+			for _, section := range directive.RuleType.RuleSections {
+				for i := range section.Lines {
+					section.Lines[i] = strings.TrimSpace(section.Lines[i])
+				}
+			}
+		}
 	}
 }
 
@@ -207,6 +286,40 @@ func convert(f *File) (*RuleSets, error) {
 
 	var sets []*RuleSet
 	for _, d := range f.Directives {
+		defaults := make(map[string]*RuleSet)
+		for ruleType, rt := range f.RuleTypes {
+			rs := &RuleSet{Bodies: make([]*RuleBody, 0)}
+			for _, s := range rt.RuleSections {
+				var rb RuleBody
+				var ruleTypes []string
+				// for ruletype definitions, second part is
+				// *always* the type, third part is optional dependencies.
+				for i := 0; i < len(s.SecondPart); i++ {
+					ruleTypes = append(ruleTypes, s.SecondPart[i].Value().String())
+				}
+				if s.Colon != "" {
+					// We are using a non-nil Dependencies to differentiate between unspecified and
+					// specified but empty.
+					rb.Dependencies = make([]string, 0)
+				}
+				for i := 0; i < len(s.ThirdPart); i++ {
+					rb.Dependencies = append(rb.Dependencies, s.ThirdPart[i].Value().String())
+				}
+				for i, t := range ruleTypes {
+					if i == 0 {
+						rb.RuleType = t
+					}
+					if t == "failok" {
+						rb.FailOK = true
+					}
+				}
+				rb.Lines = s.Lines
+				rs.Bodies = append(rs.Bodies, &rb)
+			}
+			defaults[ruleType] = rs
+		}
+
+		types := make(map[string]struct{})
 		rs := &RuleSet{Target: d.Rule.Target.Value(), Bodies: make([]*RuleBody, 0)}
 		for i, s := range d.Rule.RuleSections {
 			var rb RuleBody
@@ -222,21 +335,66 @@ func convert(f *File) (*RuleSets, error) {
 				for i := 0; i < len(s.SecondPart); i++ {
 					ruleTypes = append(ruleTypes, s.SecondPart[i].Value().String())
 				}
-				for i := 0; i < len(s.ThirdPart); i++ {
-					rb.Dependencies = append(rb.Dependencies, s.ThirdPart[i].Value().String())
+				if s.Colon == "" {
+					// for subsequent rules, if no dep list is specified, inherit from the first rule.
+					rb.Dependencies = rs.Bodies[0].Dependencies
+				} else {
+					for i := 0; i < len(s.ThirdPart); i++ {
+						rb.Dependencies = append(rb.Dependencies, s.ThirdPart[i].Value().String())
+					}
 				}
 			}
-			rb.RuleType = strings.Join(ruleTypes, " ")
+			for i, t := range ruleTypes {
+				if i == 0 {
+					rb.RuleType = t
+				}
+				if t == "failok" {
+					rb.FailOK = true
+				}
+			}
+
+			//ruleTypes[0] //strings.Join(ruleTypes, " ")
+			if _, ok := types[rb.RuleType]; ok {
+				return nil, fmt.Errorf("Duplicate definition for target %s", d.Rule.Target.Value())
+			}
+			types[rb.RuleType] = struct{}{}
 			rb.Lines = s.Lines
 			rs.Bodies = append(rs.Bodies, &rb)
-			sets = append(sets, rs)
 		}
+		// apply any defaults
+		var additional []*RuleBody
+		for i, body := range rs.Bodies {
+			if defaults, ok := defaults[body.RuleType]; ok {
+				for _, b := range defaults.Bodies {
+					if rs.Bodies[0].Dependencies != nil {
+						b.Dependencies = rs.Bodies[0].Dependencies
+					}
+					// 					if b.Dependencies == nil {
+					// 						b.Dependencies = rs.Bodies[0].Dependencies
+					// 					}
+
+					if len(body.Lines) == 0 && b.RuleType == body.RuleType {
+						rs.Bodies[i] = b
+					} else {
+						additional = append(additional, b)
+					}
+				}
+			}
+		}
+		for _, body := range additional {
+			if _, ok := types[body.RuleType]; ok {
+				continue
+			}
+			types[body.RuleType] = struct{}{}
+			rs.Bodies = append(rs.Bodies, body)
+		}
+		sets = append(sets, rs)
 	}
 	// sets are searched in reverse read order.
 	for i, j := 0, len(sets)-1; i < j; i, j = i+1, j-1 {
 		sets[i], sets[j] = sets[j], sets[i]
 	}
-	return &RuleSets{sets}, nil
+	return &RuleSets{f.Vars, sets}, nil
 }
 
 func Parse(file string) (*RuleSets, error) {
