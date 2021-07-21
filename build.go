@@ -203,14 +203,12 @@ func (g *Graph) Execute(njobs int) error {
 	// 	return nil
 }
 
-func addHeader(body string, target string) string {
+func addHeader(body string) string {
 	ret := `
 set -o errexit
 set -o nounset
 set -o pipefail
 # set -x
-
-target=` + target + `
 `
 
 	// 	for _, v := range vars {
@@ -220,7 +218,7 @@ target=` + target + `
 
 	ret += body + `
 `
-	// fmt.Printf("SCRIPT: %s", ret)
+	//fmt.Printf("SCRIPT: %s", ret)
 	return ret
 }
 
@@ -238,8 +236,9 @@ func (n *Node) run() error {
 		vars = append(vars, fmt.Sprintf("match_%d=%s", i, s))
 	}
 	vars = append(vars, fmt.Sprintf("mmk_ruletype=%s", n.RuleType))
+	vars = append(vars, fmt.Sprintf("target=%s", n.Target))
 	cmd.Env = append(os.Environ(), vars...)
-	cmd.Stdin = strings.NewReader(addHeader(execBody, n.Target))
+	cmd.Stdin = strings.NewReader(addHeader(execBody))
 	if Verbose {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -264,8 +263,9 @@ func (n *Node) BuildDate() time.Time {
 			for i, s := range strs {
 				vars = append(vars, fmt.Sprintf("match_%d=%s", i, s))
 			}
+			vars = append(vars, fmt.Sprintf("target=%s", n.Target))
 			cmd.Env = append(os.Environ(), vars...)
-			cmd.Stdin = strings.NewReader(addHeader(execBody, n.Target))
+			cmd.Stdin = strings.NewReader(addHeader(execBody))
 			if Verbose {
 				cmd.Stderr = os.Stderr
 			}

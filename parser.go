@@ -104,11 +104,8 @@ func (e *Elem) Value() *Matcher {
 	if e.Any != "" {
 		return &Matcher{Str: strings.Trim(e.Any, `"`)}
 	} else {
-		return &Matcher{Regex: regexp.MustCompile(strings.Trim(e.Regex, `'`))}
+		return &Matcher{Regex: regexp.MustCompile("^" + strings.Trim(e.Regex, `'`) + "$")}
 	}
-	// else if e.String != "" {
-	// 		return &Matcher{Str: strings.Trim(e.String, `"`)}
-	// 	}
 }
 
 type Matcher struct {
