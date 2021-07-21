@@ -484,8 +484,8 @@ For example:
 # Hello, this is a comment.
 
 "my weird rule name" : dep1 \
-					   dep2 \
-					   dep3
+                       dep2 \
+                       dep3
 	echo "This is the rule body"
 
 'dep[0-9]' : # this target does nothing
