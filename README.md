@@ -11,6 +11,16 @@ usability as a modern build tool
 go get github.com/knusbaum/mmk/cmd/mmk
 ```
 
+## Flags
+```
+  -d	dump the parsed rules to stdout
+  -f string
+    	the mmkfile to read and execute (default "mmkfile")
+  -j int
+    	max number of concurrent jobs (default GOMAXPROCS+1)
+  -v	run verbosely
+```
+
 ## Features
 
 ### Rule-based Target Definitions
