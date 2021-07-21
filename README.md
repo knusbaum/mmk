@@ -5,6 +5,12 @@ MMK is a modernized version of the make build tool (Modern MaKe)
 It incorporates several improvements to a traditional make that improve its
 usability as a modern build tool
 
+## Installation
+
+```
+go get github.com/knusbaum/mmk/cmd/mmk
+```
+
 ## Features
 
 ### Rule-based Target Definitions
