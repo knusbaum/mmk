@@ -74,6 +74,8 @@ func main() {
 	}
 	os.Setenv("mmk_njobs", fmt.Sprintf("%d", *jobs))
 
+	//lex(*mmkfile)
+
 	res, err := mmk.Parse(*mmkfile)
 	if err != nil {
 		log.Fatalf("Error: %s", err)

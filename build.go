@@ -73,7 +73,7 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 	}
 	rule := r.RuleFor(target, ruleType)
 	if rule == nil {
-		if fileExists(target) {
+		if ruleType == "" && fileExists(target) {
 			log.Printf("No rule found for %s:%s, but found file with same name.", target, ruleType)
 			return nil, nil
 		}
@@ -101,27 +101,15 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 	}
 	dependencystr := strings.Join(body.Dependencies, " ")
 	dependencystr = os.Expand(dependencystr, func(s string) string {
-		// log.Printf("LOOKING UP [%s]\n", s)
 		return vars[s]
 	})
-	//log.Printf("EXPANDED DEPENDENCIES: %s\n", dependencystr)
 
-	// 	var v struct {
-	// 		Strs []string `@(Any | String | Vname)*`
-	// 	}
-	// 	p := participle.MustBuild(&struct {
-	// 		Strs []string `@(Any | String | Vname)*`
-	// 	}{}, participle.Lexer(Lex))
-	// 	err := p.ParseString("", dependencystr, &v)
 	var ds deps
 	err := depParser.ParseString("", dependencystr, &ds)
 	if err != nil {
 		log.Printf("Failed to parse dependencies: %s", err)
 	}
-	// 	log.Printf("Deps: %#v", ds.Deps)
-	// 	for _, d := range ds.Deps {
-	// 		log.Printf("DEP: %#v", d)
-	// 	}
+
 	dc := append(depchain, target+":"+ruleType)
 	for _, dep := range ds.Deps {
 		depTarget := strings.Trim(dep.Target, `"`)
@@ -129,11 +117,12 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 		if dep.Colon != "" {
 			rt = dep.RuleType
 		}
-		//log.Printf("DEPENDENCY: (%s)(%s)\n", depTarget, rt)
-
-		//log.Printf("Building graph for %s (%s)\n", dependency.Target, rt)
 		depnode, err := r.BuildGraph(depTarget, rt, dc, graph)
 		if err != nil {
+			if body.FailOK {
+				log.Printf("Cannot find dependency %s:%s, but %s:%s is failok. Skipping.", depTarget, rt, target, ruleType)
+				continue
+			}
 			return nil, err
 		}
 		if depnode == nil {

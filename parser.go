@@ -18,7 +18,7 @@ var Lex = stateful.Must(stateful.Rules{
 		{"String", `"(\\"|[^"])*"`, nil},
 	},
 	"Any": {
-		{"Any", `[^\s\\]+`, nil},
+		{"Any", `[^'\s\\]+`, nil},
 		{"continue", `\\.*\n\s*`, nil},
 	},
 	"Root": {
@@ -37,10 +37,14 @@ var Lex = stateful.Must(stateful.Rules{
 	"Var": {
 		{"Vname", "[a-zA-Z][a-zA-Z0-9_-]*", nil},
 		{"Newline", `\n`, stateful.Pop()},
-		{"Equal", "=", nil},
+		{"Equal", "=", stateful.Push("Val")},
+		{"whitespace", `[\t\f\r ]+`, nil},
+	},
+	"Val": {
 		stateful.Include("String"),
 		stateful.Include("Any"),
 		{"whitespace", `[\t\f\r ]+`, nil},
+		{"Newline", `\n`, stateful.Push("Root")},
 	},
 })
 
@@ -71,7 +75,7 @@ type Var struct {
 }
 
 type Rule struct {
-	Target       Elem           `@@`
+	Target       []*Elem        `@@*`
 	RuleSections []*RuleSection `@@*`
 }
 
@@ -100,12 +104,63 @@ func (e *Elem) Raw() string {
 	}
 }
 
+func (e *Elem) Combine(e2 *Elem) *Elem {
+	var (
+		isRegex bool
+		s1, s2  string
+	)
+	if e.Any == "" {
+		s1 = strings.Trim(e.Regex, `'`)
+		isRegex = true
+	} else {
+		s1 = strings.Trim(e.Any, `"`)
+	}
+
+	if e2.Any == "" {
+		s2 = strings.Trim(e2.Regex, `'`)
+		if !isRegex {
+			s1 = regexp.QuoteMeta(s1)
+		}
+		isRegex = true
+	} else {
+		s2 = strings.Trim(e2.Any, `"`)
+	}
+
+	fmt.Printf(" COMBINING [%s] with [%s]\n", s1, s2)
+	if isRegex {
+		return &Elem{Regex: s1 + s2}
+	} else {
+		return &Elem{Any: s1 + s2}
+	}
+}
+
+func (e *Elem) Expand(m map[string]string) {
+	if e.Any != "" {
+		e.Any = os.Expand(e.Any, func(s string) string {
+			return m[s]
+		})
+	}
+}
+
 func (e *Elem) Value() *Matcher {
 	if e.Any != "" {
 		return &Matcher{Str: strings.Trim(e.Any, `"`)}
 	} else {
 		return &Matcher{Regex: regexp.MustCompile("^" + strings.Trim(e.Regex, `'`) + "$")}
 	}
+}
+
+func combineExpandElems(es []*Elem, m map[string]string) *Elem {
+	var ret *Elem
+	for i, e := range es {
+		e.Expand(m)
+		if i == 0 {
+			ret = e
+		} else {
+			ret = ret.Combine(e)
+		}
+	}
+	return ret
 }
 
 type Matcher struct {
@@ -330,8 +385,13 @@ func convert(f *File) (*RuleSets, error) {
 			defaults[ruleType] = rs
 		}
 
+		vars := make(map[string]string)
+		for _, v := range f.Vars {
+			vars[v.Name] = strings.Join(v.Value, " ")
+		}
+
 		types := make(map[string]struct{})
-		rs := &RuleSet{Target: d.Rule.Target.Value(), Bodies: make([]*RuleBody, 0)}
+		rs := &RuleSet{Target: combineExpandElems(d.Rule.Target, vars).Value(), Bodies: make([]*RuleBody, 0)}
 		for i, s := range d.Rule.RuleSections {
 			var rb RuleBody
 			var ruleTypes []string
@@ -366,7 +426,7 @@ func convert(f *File) (*RuleSets, error) {
 
 			//ruleTypes[0] //strings.Join(ruleTypes, " ")
 			if _, ok := types[rb.RuleType]; ok {
-				return nil, fmt.Errorf("Duplicate definition for target %s", d.Rule.Target.Value())
+				return nil, fmt.Errorf("Duplicate definition for target %s", combineExpandElems(d.Rule.Target, vars).Value())
 			}
 			types[rb.RuleType] = struct{}{}
 			rb.Lines = s.Lines
