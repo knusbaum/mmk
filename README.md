@@ -17,7 +17,8 @@ go get github.com/knusbaum/mmk/cmd/mmk
   -f string
     	the mmkfile to read and execute (default "mmkfile")
   -j int
-    	max number of concurrent jobs (default GOMAXPROCS+1)
+    	max number of concurrent jobs (default 9)
+  -t	print out all targets available
   -v	run verbosely
 ```
 
