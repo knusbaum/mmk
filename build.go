@@ -308,7 +308,7 @@ func (n *Node) BuildDate() time.Time {
 func (n *Node) NeedsBuild() bool {
 	//log.Printf("CHECKING TARGET [%s:%s]", n.Target, n.RuleType)
 	if n.RuleType == "" {
-		log.Printf("Checking Build Date.")
+		//log.Printf("Checking Build Date.")
 		thisDate := n.BuildDate()
 		if thisDate.IsZero() {
 			//log.Printf("DATE IS ZERO")
