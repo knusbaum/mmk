@@ -98,6 +98,7 @@ func main() {
 				}
 			}
 		}
+		return
 	}
 
 	targets := flag.Args()
