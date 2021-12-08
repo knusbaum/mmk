@@ -306,19 +306,22 @@ func (n *Node) BuildDate() time.Time {
 }
 
 func (n *Node) NeedsBuild() bool {
-	//log.Printf("CHECKING TARGET [%s]", n.Target)
+	//log.Printf("CHECKING TARGET [%s:%s]", n.Target, n.RuleType)
 	if n.RuleType == "" {
-		//log.Printf("Checking Build Date.")
+		log.Printf("Checking Build Date.")
 		thisDate := n.BuildDate()
 		if thisDate.IsZero() {
+			//log.Printf("DATE IS ZERO")
 			return true
 		}
 		for _, out := range n.Outgoing {
 			upstream := out.BuildDate()
 			if upstream.After(thisDate) {
+				//log.Printf("UPSTREAM [%s:%s] IS AFTER THIS DATE", out.Target, out.RuleType)
 				return true
 			}
 		}
+		//log.Printf("NO UPSTREAM IS AFTER THIS DATE")
 		return false
 	}
 	return true
