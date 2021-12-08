@@ -64,6 +64,10 @@ type deps struct {
 
 var depParser = participle.MustBuild(&deps{}, participle.Lexer(depLex))
 
+func fileRuleSet(target string) *RuleSet {
+	return &RuleSet{Target: &Matcher{Str: target}, Bodies: []*RuleBody{{Dependencies: make([]string, 0), Lines: make([]string, 0)}}}
+}
+
 func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph map[string]*Node) (*Node, error) {
 	// log.Printf("depchain: %#v\n", depchain)
 	for _, dep := range depchain {
@@ -74,10 +78,17 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 	rule := r.RuleFor(target, ruleType)
 	if rule == nil {
 		if ruleType == "" && fileExists(target) {
-			log.Printf("No rule found for %s:%s, but found file with same name.", target, ruleType)
-			return nil, nil
+			// 			if Verbose {
+			// 				log.Printf("No rule found for %s, but found file with same name.", target)
+			// 			}
+			rule = fileRuleSet(target)
+		} else {
+			targetrule := target
+			if ruleType != "" {
+				targetrule += ":" + ruleType
+			}
+			return nil, fmt.Errorf("No such target %s for dependency chain %s", targetrule, strings.Join(append(depchain, targetrule), " -> "))
 		}
-		return nil, fmt.Errorf("No such target %s for dependency chain %s", target, strings.Join(depchain, " -> "))
 	}
 	node, ok := graph[target+":"+ruleType]
 	if !ok {
@@ -99,6 +110,11 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 	for _, v := range r.Vars {
 		vars[v.Name] = strings.Join(v.Value, " ")
 	}
+	strs := node.RuleSet.Target.Captures(node.Target)
+	for i, s := range strs {
+		vars[fmt.Sprintf("match_%d", i)] = s
+	}
+	vars["target"] = node.Target
 	dependencystr := strings.Join(body.Dependencies, " ")
 	dependencystr = os.Expand(dependencystr, func(s string) string {
 		return vars[s]
@@ -111,6 +127,7 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 	}
 
 	dc := append(depchain, target+":"+ruleType)
+
 	for _, dep := range ds.Deps {
 		depTarget := strings.Trim(dep.Target, `"`)
 		rt := ruleType
@@ -120,7 +137,10 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 		depnode, err := r.BuildGraph(depTarget, rt, dc, graph)
 		if err != nil {
 			if body.FailOK {
-				log.Printf("Cannot find dependency %s:%s, but %s:%s is failok. Skipping.", depTarget, rt, target, ruleType)
+				if Verbose {
+					log.Printf("Cannot build dependency %s:%s: %s", depTarget, rt, err)
+					log.Printf("%s:%s is failok. Skipping %s:%s", target, ruleType, depTarget, rt)
+				}
 				continue
 			}
 			return nil, err
@@ -132,6 +152,7 @@ func (r *RuleSets) BuildGraph(target, ruleType string, depchain []string, graph 
 		depnode.Incoming[target+":"+ruleType] = node
 		node.Outgoing[depTarget+":"+rt] = depnode
 	}
+	//log.Printf("%s:%s RETURNING NODE: %v", target, ruleType, node)
 	return node, nil
 }
 
@@ -198,20 +219,18 @@ func addHeader(body string) string {
 set -o errexit
 set -o nounset
 set -o pipefail
-# set -x
+`
+	if Verbose {
+		ret += `set -x
+`
+	}
+	ret += `
 
 function mmkecho {
 	builtin echo $@ 1>&3
 }
 
-`
-
-	// 	for _, v := range vars {
-	// 		varstr := fmt.Sprintf("%s=%s\n", v.Name, v.Value)
-	// 		ret += varstr
-	// 	}
-
-	ret += body + `
+` + body + `
 `
 	//fmt.Printf("SCRIPT: %s", ret)
 	return ret
@@ -240,7 +259,7 @@ func (n *Node) run() error {
 	}
 	cmd.ExtraFiles = []*os.File{os.Stderr}
 	if err := cmd.Run(); err != nil && !body.FailOK {
-		//log.Printf("RUN ERROR: %s", err)
+		log.Printf("RUN ERROR: %s", err)
 		return fmt.Errorf("Failed to execute target: %s: %s", n.Target, err)
 	}
 	return nil
@@ -305,6 +324,14 @@ func (n *Node) NeedsBuild() bool {
 	return true
 }
 
+func (n *Node) Fail(err error) {
+	n.Lock()
+	defer n.Unlock()
+	n.buildErr = err
+	log.Printf("ERROR: %s", err)
+	close(n.built)
+}
+
 func (n *Node) Build() error {
 	n.Lock()
 	defer n.Unlock()
@@ -315,10 +342,12 @@ func (n *Node) Build() error {
 	default:
 	}
 	if !n.NeedsBuild() {
-		if n.RuleType != "" {
-			log.Printf("%s:%s already built.", n.Target, n.RuleType)
-		} else {
-			log.Printf("%s already built.", n.Target)
+		if Verbose {
+			if n.RuleType != "" {
+				log.Printf("%s:%s already built.", n.Target, n.RuleType)
+			} else {
+				log.Printf("%s already built.", n.Target)
+			}
 		}
 		close(n.built)
 		return nil
@@ -401,18 +430,20 @@ func Execute(ns []*Node, njobs int) error {
 	execNode := make(chan *Node, 10)
 	errc := make(chan error, 10)
 	var wg sync.WaitGroup
-	for i := 0; i < njobs; i++ {
+	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			//defer log.Printf("Exiting %d", i)
 			for n := range execNode {
-				//log.Printf("Build %s", n.Target)
+				//log.Printf("(%d) Build %s", i, n.Target)
 				for _, out := range n.Outgoing {
 					//log.Printf("Waiting for %s", out.Target)
 					err := out.Wait()
 					//log.Printf("Done Waiting for %s", out.Target)
 					if err != nil {
 						errc <- fmt.Errorf("Cannot build %s. Dependency failed: %s", n.Target, err)
+						n.Fail(err)
 						return
 					}
 				}

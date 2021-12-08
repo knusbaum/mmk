@@ -63,6 +63,7 @@ func main() {
 	dump := flag.Bool("d", false, "dump the parsed rules to stdout")
 	jobs := flag.Int("j", runtime.GOMAXPROCS(-1)+1, "max number of concurrent jobs")
 	verbose := flag.Bool("v", false, "run verbosely")
+	printTargets := flag.Bool("t", false, "print out all targets available")
 	flag.Parse()
 
 	mmk.Verbose = *verbose
@@ -85,6 +86,18 @@ func main() {
 	if *dump {
 		res.Print()
 		return
+	}
+
+	if *printTargets {
+		for _, rs := range res.RuleSets {
+			for _, b := range rs.Bodies {
+				if b.RuleType != "" {
+					fmt.Printf("%s:%s\n", rs.Target, b.RuleType)
+				} else {
+					fmt.Printf("%s\n", rs.Target)
+				}
+			}
+		}
 	}
 
 	targets := flag.Args()

@@ -243,10 +243,13 @@ func (r *RuleSets) Print() {
 
 func (r *RuleSets) RuleFor(target, ruleType string) *RuleSet {
 	for _, s := range r.RuleSets {
-		//log.Printf("Checking for target %s", s.Target.String())
+		//log.Printf("Finding %s:%s Checking for target %s", target, ruleType, s.Target.String())
 		//log.Printf("TARGET MATCHES: %t, BODY(%s): %p", s.Target.Matches(target), ruleType, s.SelectBody(ruleType))
 		if s.Target.Matches(target) && s.SelectBody(ruleType) != nil {
+			//log.Printf("RETURNING %p", s)
 			return s
+		} else {
+			//log.Printf("RETURNING NIL!")
 		}
 	}
 	return nil
