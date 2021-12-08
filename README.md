@@ -50,7 +50,7 @@ Mmk supresses output from rules, but rules can voluntarily echo things to
 mmk's standard error with the `mmkecho` command:
 ```
 timefile :
-	mmkecho building timefile
+	mmkecho this will appear in the mmk output.
 	date >timefile
 ```
 
